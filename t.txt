@@ -1,0 +1,148 @@
+
+#include <Arduino.h>
+#include <DHT.h>
+
+// ===== PIN DEFINITIONS =====
+const int measurePin = 36; // GP2Y1010 Vo
+const int ledPin = 4;      // GP2Y LED control
+const int MQ135_PIN = 35;  // MQ135 analog pin
+const int DHT_PIN = 15;    // DHT11 data pin
+
+// ===== DHT SETTINGS =====
+#define DHTTYPE DHT11
+DHT dht(DHT_PIN, DHTTYPE);
+
+// ===== AQI BREAKPOINT STRUCTURE =====
+struct AQIBreakpoint {
+  float Clow;
+  float Chigh;
+  int Ilow;
+  int Ihigh;
+};
+
+// US EPA PM2.5 AQI TABLE
+AQIBreakpoint pm25_table[] = {
+  {0.0, 12.0, 0, 50},
+  {12.1, 35.4, 51, 100},
+  {35.5, 55.4, 101, 150},
+  {55.5, 150.4, 151, 200},
+  {150.5, 250.4, 201, 300},
+  {250.5, 350.4, 301, 400},
+  {350.5, 500.4, 401, 500},
+};
+
+// ===== AQI Calculation Function =====
+int calculateAQI(float concentration) {
+  for (int i = 0; i < 7; i++) {
+    if (concentration >= pm25_table[i].Clow &&
+        concentration <= pm25_table[i].Chigh) {
+
+      return ((pm25_table[i].Ihigh - pm25_table[i].Ilow) /
+              (pm25_table[i].Chigh - pm25_table[i].Clow)) *
+             (concentration - pm25_table[i].Clow) +
+             pm25_table[i].Ilow;
+    }
+  }
+  return -1; // Out of range
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, HIGH);  // LED OFF initially
+
+  dht.begin();
+}
+
+void loop() {
+
+  // === GP2Y1010 Dust Sensor (Correct Timing) ===
+  digitalWrite(ledPin, LOW);   // LED ON
+  delayMicroseconds(280);
+
+  int sensorValue = analogRead(measurePin);
+
+  delayMicroseconds(40);
+  digitalWrite(ledPin, HIGH);  // LED OFF
+
+  // Convert ADC to voltage
+  float voltage = sensorValue * (3.3 / 4095.0);
+
+  // Sharp GP2Y1010 dust calculation
+  float dustDensity = (voltage - 0.1) * 1000.0;
+  if (dustDensity < 0) dustDensity = 0;
+
+  // PM10 estimate (ratio-based)
+  float pm10 = dustDensity * 1.5;
+
+  // === Clamp PM2.5 to EPA range (max 500.4) ===
+  float pm25 = dustDensity;
+  if (pm25 > 500.4) pm25 = 500.4;
+
+  // === AQI Calculation ===
+  int aqi = calculateAQI(pm25);
+
+  // === MQ135 GAS SENSOR ===
+  int mq135_raw = analogRead(MQ135_PIN);
+
+  float vocs = mq135_raw / 10.0;         // VOCs estimated
+  float nh3 = mq135_raw * 0.2;           // NH3 estimated
+  float benzene = mq135_raw * 0.15;      // Benzene-type gases
+  int smokeLevel = map(mq135_raw, 0, 4095, 0, 100); // Smoke % (relative)
+  float co2_ppm = 150 + (mq135_raw * 0.8); // CO2 equivalent estimate
+
+  // === DHT11 Temperature and Humidity ===
+  float humidity = dht.readHumidity();
+  float temperature = dht.readTemperature();
+
+  // === OUTPUT SECTION ===
+  Serial.println("======================================");
+
+  Serial.print("PM2.5: ");
+  Serial.print(dustDensity);
+  Serial.println(" µg/m³");
+
+  Serial.print("PM10 (estimated): ");
+  Serial.print(pm10);
+  Serial.println(" µg/m³");
+
+  Serial.print("AQI: ");
+  Serial.println(aqi);
+
+  Serial.print("Voltage: ");
+  Serial.println(voltage, 3);
+
+  Serial.print("Temperature: ");
+  Serial.print(temperature);
+  Serial.println(" °C");
+
+  Serial.print("Humidity: ");
+  Serial.print(humidity);
+  Serial.println(" %");
+
+  Serial.print("VOCs: ");
+  Serial.print(vocs);
+  Serial.println(" mg/m³");
+
+  Serial.print("NH3 (estimated): ");
+  Serial.print(nh3);
+  Serial.println(" ppm");
+
+  Serial.print("Benzene-type gases: ");
+  Serial.print(benzene);
+  Serial.println(" ppm");
+
+  Serial.print("Smoke Level: ");
+  Serial.print(smokeLevel);
+  Serial.println(" %");
+
+  Serial.print("CO2 (estimated): ");
+  Serial.print(co2_ppm);
+  Serial.println(" ppm");
+
+  Serial.println("======================================\n");
+
+  delay(1500);
+}
+
